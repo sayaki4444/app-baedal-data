@@ -1,0 +1,46 @@
+name: Inspect public data fields (one-off)
+
+# 공공데이터 API 응답의 필드 이름과 방면 관련 값 분포만 출력한다 (키 값은 출력하지 않는다). 확인 후 삭제한다.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Print field names and direction-like value counts
+        run: |
+          python - <<'EOF'
+          import os, re, sys, collections
+          sys.path.insert(0, "scripts")
+          import build_cameras as b
+          key = os.environ["DATA_GO_KR_KEY"].strip()
+          first = b.fetch_page(key, 1)
+          body = first["body"]
+          items = body["items"]
+          print("totalCount:", body.get("totalCount"))
+          print("FIELDS:", sorted(items[0].keys()))
+          print("SAMPLE (first item, 좌표/관리번호 제외):")
+          for k, v in sorted(items[0].items()):
+              if k.lower() in ("latitude", "longitude"):
+                  continue
+              print("  ", k, "=", repr(v)[:60])
+          rows = list(items)
+          for p in range(2, 6):
+              rows += b.fetch_page(key, p)["body"]["items"]
+          print("rows scanned:", len(rows))
+          pat = re.compile(r"drctn|direct|photo|shoot|cmra|camera|photog|ang|방면|방향|촬영", re.I)
+          for k in sorted(rows[0].keys()):
+              if pat.search(k) or k in ("regltSe", "cmraKnd"):
+                  c = collections.Counter(str(r.get(k, "")).strip() for r in rows)
+                  print("DIST", k, "->", c.most_common(12))
+          EOF
