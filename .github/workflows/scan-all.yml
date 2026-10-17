@@ -1,0 +1,50 @@
+name: Scan all public rows (one-off)
+
+# 전체 행에서 필드 이름 합집합과 '후면/후방' 관련 텍스트를 찾는다 (키는 출력하지 않는다). 확인 후 삭제한다.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    env:
+      DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan
+        run: |
+          python - <<'PYEOF'
+          import os, sys, math, collections
+          sys.path.insert(0, "scripts")
+          import build_cameras as b
+          key = os.environ["DATA_GO_KR_KEY"].strip()
+          first = b.fetch_page(key, 1)
+          total = first["body"]["totalCount"]
+          pages = math.ceil(total / b.PAGE_SIZE)
+          rows = list(first["body"]["items"]["item"])
+          for p in range(2, pages + 1):
+              rows += b.fetch_page(key, p)["body"]["items"]["item"]
+          print("rows:", len(rows), "/", total)
+          keys = collections.Counter(k for r in rows for k in r)
+          print("KEY UNION:", sorted(keys))
+          print("KEYS NOT IN EVERY ROW:", {k: v for k, v in keys.items() if v != len(rows)})
+          words = ("후면", "후방", "전후", "뒤", "배면", "후")
+          hits = collections.Counter()
+          examples = {}
+          for r in rows:
+              for k, v in r.items():
+                  s = str(v)
+                  if any(w in s for w in words):
+                      hits[k] += 1
+                      examples.setdefault(k, s[:40])
+          print("FIELDS WITH 후면/후방 words:", dict(hits))
+          print("EXAMPLES:", examples)
+          print("regltSe ALL:", collections.Counter(str(r.get("regltSe", "")).strip() for r in rows).most_common())
+          print("roadRouteDrc ALL:", collections.Counter(str(r.get("roadRouteDrc", "")).strip() for r in rows).most_common())
+          PYEOF
