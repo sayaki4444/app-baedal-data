@@ -24,3 +24,14 @@
 ```bash
 DATA_GO_KR_KEY=<인증키> python scripts/build_cameras.py cameras.json
 ```
+
+## 후면/후방 카메라 제보 자동 검증
+
+앱에서 사용자가 올린 `후면/후방 고정카메라` 제보(`category='rear_camera'`, 처음에는 `pending`)를 사람이 승인하지 않고 공공데이터로 확인합니다.
+
+- 매일 03:30(KST) `verify-rear-reports` 워크플로가 최신 공공데이터를 **새로 받아** 대기 중인 제보와 위치를 비교합니다.
+- 공공 카메라가 **50m 이내**에 있으면 `approved`. 일치하지 않으면 대기하다가 **제보 후 7일이 지나면 `rejected`**.
+- 공공데이터에는 카메라가 앞/뒤 어느 쪽을 보는지 정보가 없습니다. 이 검증은 "그 위치에 실제 단속카메라가 있다"만 확인합니다.
+- 설정: 저장소 Settings → Secrets and variables → Actions 에 `DATA_GO_KR_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 등록. **service_role 키는 이 Secret 에만 두고 앱·저장소·채팅에 넣지 않습니다.** Secret 이 없으면 워크플로는 테스트만 하고 건너뜁니다.
+- 수동 실행: Actions → Verify rear-camera reports → Run workflow (기본 `dry_run=true`: 서버를 바꾸지 않고 결과만 출력).
+- 로컬 테스트: `python -I -m unittest discover -s tests -v`

@@ -1,0 +1,56 @@
+name: Verify rear-camera reports
+
+# 매일 새벽 최신 공공데이터를 새로 받아, 승인 대기 중인 후면/후방 카메라 제보를 위치로 비교해 자동 승인/반려한다.
+# Secrets 필요: DATA_GO_KR_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (service_role 은 이 Secret 에만 둔다)
+
+on:
+  schedule:
+    - cron: "30 18 * * *" # 매일 03:30 KST
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true 면 서버를 바꾸지 않고 결과만 출력"
+        default: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -I -m unittest discover -s tests -v
+
+      - name: Check secrets
+        id: secrets
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ] || [ -z "$DATA_GO_KR_KEY" ]; then
+            echo "필요한 Secret 이 등록되지 않아 건너뜁니다."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch fresh public camera data
+        if: steps.secrets.outputs.ready == 'true'
+        run: python scripts/build_cameras.py "$RUNNER_TEMP/cameras_fresh.json"
+
+      - name: Verify pending rear-camera reports
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.dry_run }}" != "false" ]; then
+            python scripts/verify_rear_reports.py "$RUNNER_TEMP/cameras_fresh.json" --dry-run
+          else
+            python scripts/verify_rear_reports.py "$RUNNER_TEMP/cameras_fresh.json"
+          fi
