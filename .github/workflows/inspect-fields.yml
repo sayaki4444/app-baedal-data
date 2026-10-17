@@ -26,7 +26,7 @@ jobs:
           key = os.environ["DATA_GO_KR_KEY"].strip()
           first = b.fetch_page(key, 1)
           body = first["body"]
-          items = body["items"]
+          items = body["items"]["item"]
           print("totalCount:", body.get("totalCount"))
           print("FIELDS:", sorted(items[0].keys()))
           print("SAMPLE (first item, 좌표/관리번호 제외):")
@@ -36,7 +36,7 @@ jobs:
               print("  ", k, "=", repr(v)[:60])
           rows = list(items)
           for p in range(2, 6):
-              rows += b.fetch_page(key, p)["body"]["items"]
+              rows += b.fetch_page(key, p)["body"]["items"]["item"]
           print("rows scanned:", len(rows))
           pat = re.compile(r"drctn|direct|photo|shoot|cmra|camera|photog|ang|방면|방향|촬영", re.I)
           for k in sorted(rows[0].keys()):
