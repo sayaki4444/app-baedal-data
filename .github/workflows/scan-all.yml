@@ -34,17 +34,19 @@ jobs:
           keys = collections.Counter(k for r in rows for k in r)
           print("KEY UNION:", sorted(keys))
           print("KEYS NOT IN EVERY ROW:", {k: v for k, v in keys.items() if v != len(rows)})
-          words = ("후면", "후방", "전후", "뒤", "배면", "후")
-          hits = collections.Counter()
-          examples = {}
+          import re
+          pat = re.compile(r"후면|후방|전후면|배면|rear", re.I)
+          hits = collections.Counter(); samples = collections.defaultdict(list)
           for r in rows:
               for k, v in r.items():
                   s = str(v)
-                  if any(w in s for w in words):
+                  if pat.search(s):
                       hits[k] += 1
-                      examples.setdefault(k, s[:40])
-          print("FIELDS WITH 후면/후방 words:", dict(hits))
-          print("EXAMPLES:", examples)
+                      if len(samples[k]) < 12:
+                          samples[k].append(s[:50])
+          print("STRICT 후면/후방/전후면/배면 hits:", dict(hits))
+          for k, v in samples.items():
+              print("SAMPLES", k, v)
           print("regltSe ALL:", collections.Counter(str(r.get("regltSe", "")).strip() for r in rows).most_common())
           print("roadRouteDrc ALL:", collections.Counter(str(r.get("roadRouteDrc", "")).strip() for r in rows).most_common())
           PYEOF
