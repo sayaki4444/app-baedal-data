@@ -6,6 +6,7 @@
 import json
 import math
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -16,6 +17,9 @@ ENDPOINT = "https://api.data.go.kr/openapi/tn_pubr_public_unmanned_traffic_camer
 PAGE_SIZE = 1000
 MERGE_RADIUS_M = 30  # 이 거리 안의 같은 종류 카메라는 하나로 합친다
 # 대한민국 대략적 경계. 이 밖의 좌표는 오입력으로 보고 버린다.
+# 설치장소(itlpc) 이름에 후면/후방이 적힌 카메라를 후면 단속카메라로 표시한다.
+# 공공데이터에는 카메라가 보는 방향 항목이 없어 이름으로 추정한다(주소의 '남후면' 같은 지명은 보지 않는다).
+REAR_PATTERN = re.compile(r"후면|후방|전후면|배면")
 LAT_RANGE = (33.0, 38.9)
 LON_RANGE = (124.5, 132.0)
 
@@ -73,7 +77,7 @@ def normalize(item: dict):
         return None
     name = (item.get("itlpc") or item.get("rdnmadr") or item.get("lnmadr") or "").strip()
     road = (item.get("roadRouteNm") or "").strip()
-    return {
+    out = {
         "lat": round(lat, 6),
         "lon": round(lon, 6),
         "kind": kind_name((item.get("regltSe") or "").strip()),
@@ -81,6 +85,9 @@ def normalize(item: dict):
         "name": name,
         "road": road,
     }
+    if REAR_PATTERN.search((item.get("itlpc") or "")):
+        out["rear"] = True  # 후면/후방 카메라로 추정 (없으면 키를 만들지 않는다)
+    return out
 
 
 def distance_m(a, b) -> float:
@@ -103,6 +110,8 @@ def merge_close(cameras: list) -> list:
             for dx in (-1, 0, 1):
                 for o in grid.get((cy + dy, cx + dx), ()):
                     if o["kind"] == c["kind"] and o["limit"] == c["limit"] and distance_m(o, c) <= MERGE_RADIUS_M:
+                        if c.get("rear"):
+                            o["rear"] = True  # 합쳐져도 후면 표시는 잃지 않는다
                         dup = True
                         break
                 if dup:
