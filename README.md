@@ -49,3 +49,15 @@ DATA_GO_KR_KEY=<인증키> python scripts/build_cameras.py cameras.json
 - 설정: 저장소 Settings → Secrets and variables → Actions 에 `DATA_GO_KR_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` 등록. **service_role 키는 이 Secret 에만 두고 앱·저장소·채팅에 넣지 않습니다.** Secret 이 없으면 워크플로는 테스트만 하고 건너뜁니다.
 - 수동 실행: Actions → Verify rear-camera reports → Run workflow (기본 `dry_run=true`: 서버를 바꾸지 않고 결과만 출력).
 - 로컬 테스트: `python -I -m unittest discover -s tests -v`
+
+## 공유 제보 -> 엑셀 (export_reports.py)
+
+서버에 올라온 **승인된** 공유 제보를 엑셀의 `제보`(후면/후방 카메라) `단속`(실시간 단속) `통제` 시트에 추가합니다. 삭제는 하지 않고, 같은 제보ID는 다시 적지 않습니다.
+
+```bash
+python scripts/export_reports.py raw/<엑셀파일>.xls     # 엑셀을 닫은 상태에서 (Windows + Excel)
+```
+
+- 열: 제보ID, 접수시각, 상태, 위도, 경도, 메모, 확인, 부인, 가까운 공공 카메라, 거리(m), 관리번호, 처리 (처리 칸은 사람이 씁니다).
+- 제보한 사람의 ID는 가져오지 않습니다. 앱의 공개 키(읽기 전용)를 `local.properties`에서 읽기만 하고 출력/저장하지 않습니다.
+- 후면 제보는 만료가 없지만 실시간 단속(3시간)과 통제(12시간)는 서버에서 만료되어 사라지므로, 기록을 남기려면 자주 실행하세요.
