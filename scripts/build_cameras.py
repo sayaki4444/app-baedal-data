@@ -1,11 +1,17 @@
 """공공데이터포털 '전국무인교통단속카메라표준데이터'를 받아 cameras.json 으로 정규화한다.
 
 사용:  DATA_GO_KR_KEY=<인증키> python scripts/build_cameras.py [출력경로]
+       python scripts/build_cameras.py [출력경로] --csv <표준데이터.csv>   (인증키 없이 내려받은 CSV로 만들 때)
 표준 라이브러리만 사용한다. 인증키는 환경변수로만 받고 파일에 남기지 않는다.
+
+후면 카메라: 공공데이터에는 후면을 구분하는 항목이 없다. 사람이 확인한 후면 카메라는 rear_overrides.json 에 모아 두고,
+이 스크립트가 매번 적용한다 (목록은 추가만 하고 지우지 않는다). 적용 규칙은 apply_rear_overrides() 참고.
 """
 import json
+import csv
 import math
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -18,6 +24,12 @@ MERGE_RADIUS_M = 30  # 이 거리 안의 같은 종류 카메라는 하나로 �
 # 대한민국 대략적 경계. 이 밖의 좌표는 오입력으로 보고 버린다.
 LAT_RANGE = (33.0, 38.9)
 LON_RANGE = (124.5, 132.0)
+
+# 후면 지정 목록(rear_overrides.json)을 공공 카메라에 연결하는 규칙
+LINK_SAME_ADDRESS_M = 100  # 지번 주소가 같은 공공 카메라가 이 거리 안에 있으면 같은 카메라로 본다
+LINK_NEAREST_M = 40        # 그 밖에는 이 거리 안의 가장 가까운 공공 카메라에 붙인다
+LINK_BY_ID_FALLBACK_M = 10  # 관리번호가 바뀐 경우 좌표로 다시 찾을 때
+OVERRIDES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rear_overrides.json")
 
 
 def fetch_page(key: str, page: int) -> dict:
@@ -80,7 +92,46 @@ def normalize(item: dict):
         "limit": to_int(item.get("lmttVe")),  # 제한속도 km/h, 0이면 없음
         "name": name,
         "road": road,
+        # 아래 두 값은 후면 지정을 연결할 때만 쓰고 cameras.json 에는 쓰지 않는다 (_ 로 시작)
+        "_mgmt": (item.get("mnlssRegltCameraManageNo") or "").strip(),
+        "_addr": normalize_address(item.get("lnmadr") or ""),
     }
+
+
+_PROVINCE_PREFIX = re.compile(r"^(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)\S*\s*")
+
+
+def normalize_address(addr: str) -> str:
+    """'부산광역시 영도구 동삼동 1166' 과 '부산 영도구 동삼동 1166' 을 같게 만든다 (시도 이름과 공백 정리)."""
+    a = re.sub(r"\s+", " ", (addr or "").strip())
+    return _PROVINCE_PREFIX.sub("", a)
+
+
+def load_csv_items(path: str) -> list:
+    """공공데이터포털에서 내려받은 CSV(cp949 또는 utf-8)를 API 응답 항목 모양으로 바꾼다."""
+    raw = open(path, "rb").read()
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise RuntimeError("CSV 문자 코드를 읽지 못했습니다 (utf-8, cp949 모두 실패)")
+    items = []
+    for row in csv.DictReader(text.splitlines()):
+        items.append({
+            "mnlssRegltCameraManageNo": row.get("무인교통단속카메라관리번호", ""),
+            "roadRouteNm": row.get("도로노선명", ""),
+            "rdnmadr": row.get("소재지도로명주소", ""),
+            "lnmadr": row.get("소재지지번주소", ""),
+            "latitude": row.get("위도", ""),
+            "longitude": row.get("경도", ""),
+            "itlpc": row.get("설치장소", ""),
+            "regltSe": row.get("단속구분", ""),
+            "lmttVe": row.get("제한속도", ""),
+        })
+    return items
 
 
 def distance_m(a, b) -> float:
@@ -104,6 +155,8 @@ def merge_close(cameras: list) -> list:
                 for o in grid.get((cy + dy, cx + dx), ()):
                     if o["kind"] == c["kind"] and o["limit"] == c["limit"] and distance_m(o, c) <= MERGE_RADIUS_M:
                         dup = True
+                        if c.get("rear"):
+                            o["rear"] = True  # 합쳐지는 쪽이 후면이면 남는 카메라가 후면이 된다
                         break
                 if dup:
                     break
@@ -115,31 +168,133 @@ def merge_close(cameras: list) -> list:
     return kept
 
 
-def main() -> int:
-    key = os.environ.get("DATA_GO_KR_KEY", "").strip()
-    if not key:
-        print("DATA_GO_KR_KEY 환경변수가 필요합니다.", file=sys.stderr)
-        return 1
-    out = sys.argv[1] if len(sys.argv) > 1 else "cameras.json"
+def apply_rear_overrides(items: list, entries: list) -> dict:
+    """rear_overrides.json 의 항목을 정규화된 카메라 목록(items)에 적용한다. items 는 제자리에서 바뀌고 추가될 수 있다.
 
-    first = fetch_page(key, 1)
-    total = first["body"]["totalCount"]
-    pages = math.ceil(total / PAGE_SIZE)
-    raw = list(first["body"]["items"]["item"])
-    for p in range(2, pages + 1):
-        raw += fetch_page(key, p)["body"]["items"]["item"]
-    print(f"받음: {len(raw)} / 전체 {total}")
-    if len(raw) < total * 0.95:
-        print("받은 수가 전체의 95% 미만이라 중단합니다.", file=sys.stderr)
-        return 2
+    규칙
+      1) 공공 카메라 관리번호(J6729 같은 번호)로 지정된 항목: 그 번호의 카메라를 후면으로 한다.
+         번호가 없어졌으면 좌표 10m 이내 가장 가까운 카메라, 그것도 없으면 지정한 좌표에 새 후면 카메라를 만든다.
+      2) MY-0001 같은 사용자 지점: 지번이 같은 공공 카메라가 100m 이내에 있으면 그 카메라, 아니면 40m 이내의
+         가장 가까운 공공 카메라를 후면으로 한다. 둘 다 없으면 지정한 좌표에 새 후면 카메라를 만든다.
+      항목을 지우지는 않는다. 반환값은 결과 요약(연결/새로 만듦/확인 필요 목록).
+    """
+    by_mgmt = {}
+    for it in items:
+        if it.get("_mgmt"):
+            by_mgmt.setdefault(it["_mgmt"], it)
+    by_addr = {}
+    for it in items:
+        if it.get("_addr"):
+            by_addr.setdefault(it["_addr"], []).append(it)
+    base = list(items)
+
+    def nearest(entry, pool, limit_m):
+        best, best_d = None, None
+        for it in pool:
+            if abs(it["lat"] - entry["lat"]) > 0.02 or abs(it["lon"] - entry["lon"]) > 0.02:
+                continue
+            d = distance_m(it, entry)
+            if d <= limit_m and (best_d is None or d < best_d):
+                best, best_d = it, d
+        return best, best_d
+
+    report = {"linked": [], "created": [], "review": []}
+    for e in entries:
+        target, how = None, ""
+        if not e["id"].startswith("MY-"):
+            target = by_mgmt.get(e["id"])
+            how = "관리번호"
+            if target is None and e.get("lat") is not None:
+                target, _ = nearest(e, base, LINK_BY_ID_FALLBACK_M)
+                how = "좌표(관리번호 없음)"
+                if target is not None:
+                    report["review"].append((e["id"], "관리번호가 데이터에 없어 좌표로 찾았습니다"))
+        else:
+            if e.get("addr"):
+                same = by_addr.get(normalize_address(e["addr"]), [])
+                target, _ = nearest(e, same, LINK_SAME_ADDRESS_M)
+                how = "같은 지번"
+            if target is None:
+                target, _ = nearest(e, base, LINK_NEAREST_M)
+                how = "가장 가까운 카메라"
+        if target is not None:
+            target["rear"] = True
+            report["linked"].append((e["id"], how, target.get("_mgmt", ""), target["name"]))
+        elif e.get("lat") is not None and e.get("lon") is not None:
+            items.append({
+                "lat": round(e["lat"], 6),
+                "lon": round(e["lon"], 6),
+                "kind": "other",
+                "limit": 0,
+                "name": (e.get("name") or "").strip() or "후면 카메라(직접 추가)",
+                "road": "",
+                "rear": True,
+                "_mgmt": e["id"],
+                "_addr": normalize_address(e.get("addr", "")),
+            })
+            report["created"].append((e["id"], e.get("addr", "")))
+        else:
+            report["review"].append((e["id"], "연결할 카메라도 좌표도 없습니다"))
+    return report
+
+
+def load_overrides(path: str = OVERRIDES_PATH) -> list:
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f).get("entries", [])
+
+
+def public_view(c: dict) -> dict:
+    """cameras.json 에 쓸 필드만 남긴다 (_ 로 시작하는 연결용 값은 뺀다)."""
+    return {k: v for k, v in c.items() if not k.startswith("_")}
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    csv_path = None
+    if "--csv" in args:
+        i = args.index("--csv")
+        csv_path = args[i + 1]
+        del args[i:i + 2]
+    out = args[0] if args else "cameras.json"
+
+    if csv_path:
+        raw = load_csv_items(csv_path)
+        print(f"CSV에서 읽음: {len(raw)}")
+    else:
+        key = os.environ.get("DATA_GO_KR_KEY", "").strip()
+        if not key:
+            print("DATA_GO_KR_KEY 환경변수가 필요합니다 (또는 --csv 로 CSV 파일을 지정).", file=sys.stderr)
+            return 1
+        first = fetch_page(key, 1)
+        total = first["body"]["totalCount"]
+        pages = math.ceil(total / PAGE_SIZE)
+        raw = list(first["body"]["items"]["item"])
+        for p in range(2, pages + 1):
+            raw += fetch_page(key, p)["body"]["items"]["item"]
+        print(f"받음: {len(raw)} / 전체 {total}")
+        if len(raw) < total * 0.95:
+            print("받은 수가 전체의 95% 미만이라 중단합니다.", file=sys.stderr)
+            return 2
 
     normalized = [n for n in map(normalize, raw) if n]
+    entries = load_overrides()
+    report = apply_rear_overrides(normalized, entries)  # 합치기 전에 적용해서 후면 표시가 합쳐지며 사라지지 않게 한다
     merged = merge_close(normalized)
     # 안정적인 순서로 정렬해 불필요한 diff를 줄인다.
     merged.sort(key=lambda c: (c["lat"], c["lon"], c["kind"]))
     for i, c in enumerate(merged, 1):
         c["id"] = i
-    print(f"정규화: {len(normalized)}, 병합 후: {len(merged)} (버림 {len(raw) - len(normalized)})")
+    merged = [public_view(c) for c in merged]
+    rear_total = sum(1 for c in merged if c.get("rear"))
+    print(f"정규화: {len(normalized) - len(report['created'])}, 병합 후: {len(merged)} (버림 {len(raw) - (len(normalized) - len(report['created']))})")
+    print(
+        f"후면 지정 {len(entries)}건: 기존 카메라에 연결 {len(report['linked'])}, 새로 만듦 {len(report['created'])}, "
+        f"확인 필요 {len(report['review'])} / 후면 카메라 합계 {rear_total}"
+    )
+    for eid, why in report["review"]:
+        print(f"  확인 필요: {eid}: {why}")
 
     # 내용이 그대로면 파일을 다시 쓰지 않는다(불필요한 커밋 방지).
     if os.path.exists(out):
